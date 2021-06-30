@@ -10,7 +10,7 @@ from typing import Callable
 import pytest
 from _pytest.logging import LogCaptureFixture, caplog
 
-from python_terraform import IsFlagged, IsNotFlagged, Terraform, TerraformCommandError
+from terraform_wrapper import IsFlagged, IsNotFlagged, Terraform, TerraformCommandError
 
 logging.basicConfig(level=logging.DEBUG)
 root_logger = logging.getLogger()

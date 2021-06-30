@@ -7,7 +7,7 @@ except ImportError:
     from distutils.core import setup
 
 dependencies = []
-module_name = "python-terraform"
+module_name = "terraform-wrapper"
 short_description = (
     "This is a python module provide a wrapper " "of terraform command line tool"
 )
@@ -21,14 +21,14 @@ except IOError:
 
 setup(
     name=module_name,
-    version="0.14.0",
-    url="https://github.com/beelit94/python-terraform",
+    version="0.15.3",
+    url="https://github.com/cranzy/python-terraform",
     license="MIT",
-    author="Freddy Tan",
-    author_email="beelit94@gmail.com",
+    author="Dimitar Dimitrov",
+    author_email="dev.dimitar.dimitrov@gmail.com",
     description=short_description,
     long_description=long_description,
-    packages=["python_terraform"],
+    packages=["terraform_wrapper"],
     package_data={},
     platforms="any",
     install_requires=dependencies,

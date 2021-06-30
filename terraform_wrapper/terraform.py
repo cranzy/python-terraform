@@ -1,58 +1,56 @@
+# -*- coding: utf-8 -*-
+# above is for compatibility of python2.7.11
+
+import subprocess
+import os
+import sys
 import json
 import logging
-import os
-import subprocess
-import sys
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 
-from python_terraform.tfstate import Tfstate
-
-logger = logging.getLogger(__name__)
-
-COMMAND_WITH_SUBCOMMANDS = {"workspace"}
+from terraform_wrapper.tfstate import Tfstate
 
 
-class TerraformFlag:
+try:  # Python 2.7+
+    from logging import NullHandler
+except ImportError:
+    class NullHandler(logging.Handler):
+        def emit(self, record):
+            pass
+
+log = logging.getLogger(__name__)
+log.addHandler(NullHandler())
+
+
+class IsFlagged:
     pass
 
 
-class IsFlagged(TerraformFlag):
+class IsNotFlagged:
     pass
-
-
-class IsNotFlagged(TerraformFlag):
-    pass
-
-
-CommandOutput = Tuple[Optional[int], Optional[str], Optional[str]]
 
 
 class TerraformCommandError(subprocess.CalledProcessError):
-    def __init__(self, ret_code: int, cmd: str, out: Optional[str], err: Optional[str]):
-        super(TerraformCommandError, self).__init__(ret_code, cmd)
-        self.out = out
-        self.err = err
-        logger.error("Error with command %s. Reason: %s", self.cmd, self.err)
+  def __init__(self, ret_code, cmd, out, err):
+      super(TerraformCommandError, self).__init__(ret_code, cmd)
+      self.out = out
+      self.err = err
 
-
-class Terraform:
-    """Wrapper of terraform command line tool.
-
+class Terraform(object):
+    """
+    Wrapper of terraform command line tool
     https://www.terraform.io/
     """
 
-    def __init__(
-        self,
-        working_dir: Optional[str] = None,
-        targets: Optional[Sequence[str]] = None,
-        state: Optional[str] = None,
-        variables: Optional[Dict[str, str]] = None,
-        parallelism: Optional[str] = None,
-        var_file: Optional[str] = None,
-        terraform_bin_path: Optional[str] = None,
-        is_env_vars_included: bool = True,
-    ):
+    def __init__(self, working_dir=None,
+                 targets=None,
+                 state=None,
+                 variables=None,
+                 parallelism=None,
+                 var_file=None,
+                 terraform_bin_path=None,
+                 is_env_vars_included=True, 
+                 ):
         """
         :param working_dir: the folder of the working folder, if not given,
                             will be current working folder
@@ -75,9 +73,8 @@ class Terraform:
         self.targets = [] if targets is None else targets
         self.variables = dict() if variables is None else variables
         self.parallelism = parallelism
-        self.terraform_bin_path = (
-            terraform_bin_path if terraform_bin_path else "terraform"
-        )
+        self.terraform_bin_path = terraform_bin_path \
+            if terraform_bin_path else 'terraform'
         self.var_file = var_file
         self.temp_var_files = VariableFiles()
 
@@ -85,26 +82,20 @@ class Terraform:
         self.tfstate = None
         self.read_state_file(self.state)
 
-    def __getattr__(self, item: str) -> Callable:
+    def __getattr__(self, item):
         def wrapper(*args, **kwargs):
             cmd_name = str(item)
-            if cmd_name.endswith("_cmd"):
+            if cmd_name.endswith('_cmd'):
                 cmd_name = cmd_name[:-4]
-            logger.debug("called with %r and %r", args, kwargs)
+            logging.debug('called with %r and %r' % (args, kwargs))
             return self.cmd(cmd_name, *args, **kwargs)
 
         return wrapper
 
-    def apply(
-        self,
-        dir_or_plan: Optional[str] = None,
-        input: bool = False,
-        skip_plan: bool = True,
-        no_color: Type[TerraformFlag] = IsFlagged,
-        **kwargs,
-    ) -> CommandOutput:
-        """Refer to https://terraform.io/docs/commands/apply.html
-
+    def apply(self, dir_or_plan=None, input=False, skip_plan=False, no_color=IsFlagged,
+              **kwargs):
+        """
+        refer to https://terraform.io/docs/commands/apply.html
         no-color is flagged by default
         :param no_color: disable color of stdout
         :param input: disable prompt for a missing variable
@@ -113,78 +104,59 @@ class Terraform:
         :param kwargs: same as kwags in method 'cmd'
         :returns return_code, stdout, stderr
         """
-        if not skip_plan:
-            return self.plan(dir_or_plan=dir_or_plan, **kwargs)
-        default = kwargs.copy()
-        default["input"] = input
-        default["no_color"] = no_color
-        default["auto-approve"] = True  # a False value will require an input
+        default = kwargs
+        default['input'] = input
+        default['no_color'] = no_color
+        default['auto-approve'] = (skip_plan == True)
         option_dict = self._generate_default_options(default)
         args = self._generate_default_args(dir_or_plan)
-        return self.cmd("apply", *args, **option_dict)
+        return self.cmd('apply', *args, **option_dict)
 
-    def _generate_default_args(self, dir_or_plan: Optional[str]) -> Sequence[str]:
+    def _generate_default_args(self, dir_or_plan):
         return [dir_or_plan] if dir_or_plan else []
 
-    def _generate_default_options(
-        self, input_options: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        return {
-            "state": self.state,
-            "target": self.targets,
-            "var": self.variables,
-            "var_file": self.var_file,
-            "parallelism": self.parallelism,
-            "no_color": IsFlagged,
-            "input": False,
-            **input_options,
-        }
+    def _generate_default_options(self, input_options):
+        option_dict = dict()
+        option_dict['state'] = self.state
+        option_dict['target'] = self.targets
+        option_dict['var'] = self.variables
+        option_dict['var_file'] = self.var_file
+        option_dict['parallelism'] = self.parallelism
+        option_dict['no_color'] = IsFlagged
+        option_dict['input'] = False
+        option_dict.update(input_options)
+        return option_dict
 
-    def destroy(
-        self,
-        dir_or_plan: Optional[str] = None,
-        force: Type[TerraformFlag] = IsFlagged,
-        **kwargs,
-    ) -> CommandOutput:
-        """Refer to https://www.terraform.io/docs/commands/destroy.html
-
-        force/no-color option is flagged by default
+    def destroy(self, dir_or_plan=None, auto_approve=IsFlagged, **kwargs):
+        """
+        refer to https://www.terraform.io/docs/commands/destroy.html
+        auto_approve/no-color option is flagged by default
         :return: ret_code, stdout, stderr
         """
-        default = kwargs.copy()
-        default["force"] = force
+        default = kwargs
+        default['auto-approve'] = auto_approve
         options = self._generate_default_options(default)
         args = self._generate_default_args(dir_or_plan)
-        return self.cmd("destroy", *args, **options)
+        return self.cmd('destroy', *args, **options)
 
-    def plan(
-        self,
-        dir_or_plan: Optional[str] = None,
-        detailed_exitcode: Type[TerraformFlag] = IsFlagged,
-        **kwargs,
-    ) -> CommandOutput:
-        """Refer to https://www.terraform.io/docs/commands/plan.html
-
+    def plan(self, dir_or_plan=None, detailed_exitcode=IsFlagged, **kwargs):
+        """
+        refer to https://www.terraform.io/docs/commands/plan.html
         :param detailed_exitcode: Return a detailed exit code when the command exits.
         :param dir_or_plan: relative path to plan/folder
         :param kwargs: options
         :return: ret_code, stdout, stderr
         """
-        options = kwargs.copy()
-        options["detailed_exitcode"] = detailed_exitcode
+        options = kwargs
+        options['detailed_exitcode'] = detailed_exitcode
         options = self._generate_default_options(options)
         args = self._generate_default_args(dir_or_plan)
-        return self.cmd("plan", *args, **options)
+        return self.cmd('plan', *args, **options)
 
-    def init(
-        self,
-        dir_or_plan: Optional[str] = None,
-        backend_config: Optional[Dict[str, str]] = None,
-        reconfigure: Type[TerraformFlag] = IsFlagged,
-        backend: bool = True,
-        **kwargs,
-    ) -> CommandOutput:
-        """Refer to https://www.terraform.io/docs/commands/init.html
+    def init(self, dir_or_plan=None, backend_config=None,
+             reconfigure=IsFlagged, backend=True, **kwargs):
+        """
+        refer to https://www.terraform.io/docs/commands/init.html
 
         By default, this assumes you want to use backend config, and tries to
         init fresh. The flags -reconfigure and -backend=true are default.
@@ -192,27 +164,24 @@ class Terraform:
         :param dir_or_plan: relative path to the folder want to init
         :param backend_config: a dictionary of backend config options. eg.
                 t = Terraform()
-                t.init(backend_config={'access_key': 'myaccesskey',
+                t.init(backend_config={'access_key': 'myaccesskey', 
                 'secret_key': 'mysecretkey', 'bucket': 'mybucketname'})
         :param reconfigure: whether or not to force reconfiguration of backend
         :param backend: whether or not to use backend settings for init
         :param kwargs: options
         :return: ret_code, stdout, stderr
         """
-        options = kwargs.copy()
-        options.update(
-            {
-                "backend_config": backend_config,
-                "reconfigure": reconfigure,
-                "backend": backend,
-            }
-        )
+        options = kwargs
+        options['backend_config'] = backend_config
+        options['reconfigure'] = reconfigure
+        options['backend'] = backend
         options = self._generate_default_options(options)
         args = self._generate_default_args(dir_or_plan)
-        return self.cmd("init", *args, **options)
+        return self.cmd('init', *args, **options)
 
-    def generate_cmd_string(self, cmd: str, *args, **kwargs) -> List[str]:
-        """For any generate_cmd_string doesn't written as public method of Terraform
+    def generate_cmd_string(self, cmd, *args, **kwargs):
+        """
+        for any generate_cmd_string doesn't written as public method of terraform
 
         examples:
         1. call import command,
@@ -236,64 +205,48 @@ class Terraform:
         """
         cmds = cmd.split()
         cmds = [self.terraform_bin_path] + cmds
-        if cmd in COMMAND_WITH_SUBCOMMANDS:
-            args = list(args)
-            subcommand = args.pop(0)
-            cmds.append(subcommand)
 
         for option, value in kwargs.items():
-            if "_" in option:
-                option = option.replace("_", "-")
+            if '_' in option:
+                option = option.replace('_', '-')
 
-            if isinstance(value, list):
+            if type(value) is list:
                 for sub_v in value:
-                    cmds += [f"-{option}={sub_v}"]
+                    cmds += ['-{k}={v}'.format(k=option, v=sub_v)]
                 continue
 
-            if isinstance(value, dict):
-                if "backend-config" in option:
+            if type(value) is dict:
+                if 'backend-config' in option:
                     for bk, bv in value.items():
-                        cmds += [f"-backend-config={bk}={bv}"]
+                        cmds += ['-backend-config={k}={v}'.format(k=bk, v=bv)]
                     continue
 
                 # since map type sent in string won't work, create temp var file for
                 # variables, and clean it up later
-                elif option == "var":
-                    # We do not create empty var-files if there is no var passed.
-                    # An empty var-file would result in an error: An argument or block definition is required here
-                    if value:
-                        filename = self.temp_var_files.create(value)
-                        cmds += [f"-var-file={filename}"]
-
+                else:
+                    filename = self.temp_var_files.create(value)
+                    cmds += ['-var-file={0}'.format(filename)]
                     continue
 
             # simple flag,
             if value is IsFlagged:
-                cmds += [f"-{option}"]
+                cmds += ['-{k}'.format(k=option)]
                 continue
 
             if value is None or value is IsNotFlagged:
                 continue
 
-            if isinstance(value, bool):
-                value = "true" if value else "false"
+            if type(value) is bool:
+                value = 'true' if value else 'false'
 
-            cmds += [f"-{option}={value}"]
+            cmds += ['-{k}={v}'.format(k=option, v=value)]
 
         cmds += args
         return cmds
 
-    def cmd(
-        self,
-        cmd: str,
-        *args,
-        capture_output: Union[bool, str] = True,
-        raise_on_error: bool = True,
-        synchronous: bool = True,
-        **kwargs,
-    ) -> CommandOutput:
-        """Run a terraform command, if success, will try to read state file
-
+    def cmd(self, cmd, *args, **kwargs):
+        """
+        run a terraform command, if success, will try to read state file
         :param cmd: command and sub-command of terraform, seperated with space
                     refer to https://www.terraform.io/docs/commands/index.html
         :param args: arguments of a command
@@ -318,18 +271,17 @@ class Terraform:
                       err: The captured stderr, or None if not captured
         :return: ret_code, out, err
         """
+        capture_output = kwargs.pop('capture_output', True)
+        raise_on_error = kwargs.pop('raise_on_error', False)
         if capture_output is True:
             stderr = subprocess.PIPE
             stdout = subprocess.PIPE
-        elif capture_output == "framework":
-            stderr = None
-            stdout = None
         else:
             stderr = sys.stderr
             stdout = sys.stdout
 
         cmds = self.generate_cmd_string(cmd, *args, **kwargs)
-        logger.info("Command: %s", " ".join(cmds))
+        log.debug('command: {c}'.format(c=' '.join(cmds)))
 
         working_folder = self.working_dir if self.working_dir else None
 
@@ -337,48 +289,49 @@ class Terraform:
         if self.is_env_vars_included:
             environ_vars = os.environ.copy()
 
-        p = subprocess.Popen(
-            cmds, stdout=stdout, stderr=stderr, cwd=working_folder, env=environ_vars
-        )
+        p = subprocess.Popen(cmds, stdout=stdout, stderr=stderr,
+                             cwd=working_folder, env=environ_vars)
 
+        synchronous = kwargs.pop('synchronous', True)
         if not synchronous:
-            return None, None, None
+            return p, None, None
 
         out, err = p.communicate()
         ret_code = p.returncode
-        logger.info("output: %s", out)
+        log.debug('output: {o}'.format(o=out))
 
         if ret_code == 0:
             self.read_state_file()
         else:
-            logger.warning("error: %s", err)
+            log.warn('error: {e}'.format(e=err))
 
         self.temp_var_files.clean_up()
         if capture_output is True:
-            out = out.decode()
-            err = err.decode()
+            out = out.decode('utf-8')
+            err = err.decode('utf-8')
         else:
             out = None
             err = None
 
-        if ret_code and raise_on_error:
-            raise TerraformCommandError(ret_code, " ".join(cmds), out=out, err=err)
+        if ret_code != 0 and raise_on_error:
+            raise TerraformCommandError(
+                ret_code, ' '.join(cmds), out=out, err=err)
 
         return ret_code, out, err
 
-    def output(
-        self, *args, capture_output: bool = True, **kwargs
-    ) -> Union[None, str, Dict[str, str], Dict[str, Dict[str, str]]]:
-        """Refer https://www.terraform.io/docs/commands/output.html
 
-        Note that this method does not conform to the (ret_code, out, err) return
-        convention. To use the "output" command with the standard convention,
-        call "output_cmd" instead of "output".
+    def output(self, *args, **kwargs):
+        """
+        https://www.terraform.io/docs/commands/output.html
+
+        Note that this method does not conform to the (ret_code, out, err) return convention. To use
+        the "output" command with the standard convention, call "output_cmd" instead of
+        "output".
 
         :param args:   Positional arguments. There is one optional positional
                        argument NAME; if supplied, the returned output text
                        will be the json for a single named output value.
-        :param kwargs: Named options, passed to the command. In addition,
+        :param kwargs: Named options, passed to the command. In addition, 
                           'full_value': If True, and NAME is provided, then
                                         the return value will be a dict with
                                         "value', 'type', and 'sensitive'
@@ -391,86 +344,99 @@ class Terraform:
                  dict of named dicts each with 'value', 'sensitive', and 'type',
                     if NAME is not provided
         """
-        kwargs["json"] = IsFlagged
-        if capture_output is False:
-            raise ValueError("capture_output is required for this method")
+        full_value = kwargs.pop('full_value', False)
+        name_provided = (len(args) > 0)
+        kwargs['json'] = IsFlagged
+        if not kwargs.get('capture_output', True) is True:
+          raise ValueError('capture_output is required for this method')
 
-        ret, out, _ = self.output_cmd(*args, **kwargs)
+        ret, out, err = self.output_cmd(*args, **kwargs)
 
-        if ret:
+        if ret != 0:
             return None
 
-        return json.loads(out.lstrip())
+        out = out.lstrip()
 
-    def read_state_file(self, file_path=None) -> None:
-        """Read .tfstate file
+        value = json.loads(out)
 
+        if name_provided and not full_value:
+            value = value['value']
+
+        return value
+
+    def read_state_file(self, file_path=None):
+        """
+        read .tfstate file
         :param file_path: relative path to working dir
         :return: states file in dict type
         """
 
-        working_dir = self.working_dir or ""
+        working_dir = self.working_dir or ''
 
-        file_path = file_path or self.state or ""
+        file_path = file_path or self.state or ''
 
         if not file_path:
-            backend_path = os.path.join(file_path, ".terraform", "terraform.tfstate")
+            backend_path = os.path.join(file_path, '.terraform',
+                                        'terraform.tfstate')
 
             if os.path.exists(os.path.join(working_dir, backend_path)):
                 file_path = backend_path
             else:
-                file_path = os.path.join(file_path, "terraform.tfstate")
+                file_path = os.path.join(file_path, 'terraform.tfstate')
 
         file_path = os.path.join(working_dir, file_path)
 
         self.tfstate = Tfstate.load_file(file_path)
 
-    def set_workspace(self, workspace, *args, **kwargs) -> CommandOutput:
-        """Set workspace
-
+    def set_workspace(self, workspace):
+        """
+        set workspace
         :param workspace: the desired workspace.
         :return: status
         """
-        return self.cmd("workspace", "select", workspace, *args, **kwargs)
 
-    def create_workspace(self, workspace, *args, **kwargs) -> CommandOutput:
-        """Create workspace
+        return self.cmd('workspace' ,'select', workspace)  
 
+    def create_workspace(self, workspace):
+        """
+        create workspace
         :param workspace: the desired workspace.
         :return: status
         """
-        return self.cmd("workspace", "new", workspace, *args, **kwargs)
 
-    def delete_workspace(self, workspace, *args, **kwargs) -> CommandOutput:
-        """Delete workspace
+        return self.cmd('workspace', 'new', workspace)     
 
+    def delete_workspace(self, workspace):
+        """
+        delete workspace
         :param workspace: the desired workspace.
         :return: status
         """
-        return self.cmd("workspace", "delete", workspace, *args, **kwargs)
 
-    def show_workspace(self, **kwargs) -> CommandOutput:
-        """Show workspace, this command does not need the [DIR] part
+        return self.cmd('workspace', 'delete', workspace)    
 
+    def show_workspace(self):
+        """
+        show workspace
         :return: workspace
         """
-        return self.cmd("workspace", "show", **kwargs)
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        return self.cmd('workspace', 'show')  
+
+    def __exit__(self, exc_type, exc_value, traceback):
         self.temp_var_files.clean_up()
 
 
-class VariableFiles:
+class VariableFiles(object):
     def __init__(self):
         self.files = []
 
-    def create(self, variables: Dict[str, str]) -> str:
-        with tempfile.NamedTemporaryFile(
-            "w+t", suffix=".tfvars.json", delete=False
-        ) as temp:
-            logger.debug("%s is created", temp.name)
+    def create(self, variables):
+        with tempfile.NamedTemporaryFile('w+t', suffix='.tfvars.json', delete=False) as temp:
+            log.debug('{0} is created'.format(temp.name))
             self.files.append(temp)
-            logger.debug("variables wrote to tempfile: %s", variables)
+            log.debug(
+                'variables wrote to tempfile: {0}'.format(str(variables)))
             temp.write(json.dumps(variables))
             file_name = temp.name
 
